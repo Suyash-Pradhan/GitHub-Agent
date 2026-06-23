@@ -2,9 +2,11 @@ from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 from github import Github, GithubException
-from state import AgentState
+from state import AgentState, MODEL_NAME
 import os
 import re
+
+from utils.llm_res_formater import get_text
 
 
 FILE_BLOCK_RE = re.compile(
@@ -59,7 +61,7 @@ def code_writer_agent(state: AgentState) -> AgentState:
     print("\n[Agent 3 - Code Writer] Writing fix...")
 
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0)
         response = llm.invoke([HumanMessage(content=f"""
 You are an expert Python developer. Write a code fix based on this plan.
 
@@ -84,7 +86,7 @@ Be minimal — only change what's necessary to fix the issue.
 """)])
 
         print(f"  ✓ Code patch generated")
-        return {**state, "patch": response.content}
+        return {**state, "patch": get_text(response)}
 
     except Exception as e:
         print(f"  ✗ Code Writer failed: {e}")
@@ -103,7 +105,7 @@ def test_writer_agent(state: AgentState) -> AgentState:
     print("\n[Agent 4 - Test Writer] Writing tests...")
 
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0)
         response = llm.invoke([HumanMessage(content=f"""
 You are a Python testing expert. Write pytest tests for this bug fix.
 
@@ -129,7 +131,7 @@ FILE: tests/test_generated_fix.py
 """)])
 
         print(f"  ✓ Tests generated")
-        return {**state, "tests": response.content}
+        return {**state, "tests": get_text(response)}
 
     except Exception as e:
         print(f"  ✗ Test Writer failed: {e}")
