@@ -1,10 +1,10 @@
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
-from state import AgentState
+from state import AgentState, MODEL_NAME
 import json
 import re
-
+from utils.llm_res_formater import get_text
 
 def planner_agent(state: AgentState) -> AgentState:
     """
@@ -14,7 +14,7 @@ def planner_agent(state: AgentState) -> AgentState:
     print("\n[Agent 2 - Planner] Creating fix plan...")
 
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0)
         response = llm.invoke([
             HumanMessage(content=f"""
 You are a senior software engineer planning a bug fix.
@@ -42,7 +42,8 @@ complexity must be "simple" (1-2 files, clear fix) or "complex" (multiple files 
         ])
 
         # Parse JSON from response
-        raw = response.content.strip()
+        text = get_text(response)
+        raw = text.strip()
         # Strip markdown code fences if LLM adds them
         raw = re.sub(r"```json|```", "", raw).strip()
         plan_data = json.loads(raw)

@@ -19,11 +19,12 @@ import re
 from github import Github
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
-from state import AgentState
+from state import AgentState, MODEL_NAME
 from utils.repo_tools import list_dir, grep, read_file
 import os
+from utils.llm_res_formater import get_text
 
-MAX_TURNS = 4
+MAX_TURNS = 1
 
 SYSTEM_INSTRUCTIONS = """You are a code investigator helping debug a GitHub issue.
 You do NOT have the codebase yet. You must investigate it yourself using these actions:
@@ -46,6 +47,9 @@ located via list_dir or grep first, unless the issue explicitly names the file.
 
 
 def _parse_action(raw_text: str) -> dict:
+    print(type(raw_text))
+    print('raaawww')
+    print(raw_text)
     """Extract the JSON action from the model's response, tolerating code fences."""
     cleaned = re.sub(r"```json|```", "", raw_text).strip()
     return json.loads(cleaned)
@@ -57,7 +61,7 @@ def code_reader_agent(state: AgentState) -> AgentState:
     try:
         g = Github(os.getenv("GITHUB_TOKEN"))
         repo = g.get_repo(state["repo_full_name"])
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0)
 
         file_cache = {}  # avoid re-fetching the same file twice in one investigation
         transcript = (
@@ -74,12 +78,16 @@ ISSUE:
 Begin your investigation. What's your first action?"""
 
         messages = [HumanMessage(content=opening_prompt)]
+        print("msg: " + messages[0].content + "\n")
 
         for turn in range(1, MAX_TURNS + 1):
             response = llm.invoke(messages)
+            print(response)
+            print('reponseee')
+            print("res: " + get_text(response) + "\n")
 
             try:
-                action = _parse_action(response.content)
+                action = _parse_action(get_text(response))
             except Exception:
                 print(
                     f"  ⚠ Turn {turn}: model returned unparseable action, stopping loop"

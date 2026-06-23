@@ -1,4 +1,7 @@
+
 from typing import TypedDict, Optional
+
+MODEL_NAME = 'gemini-3.1-flash-lite'
 
 
 class AgentState(TypedDict):
