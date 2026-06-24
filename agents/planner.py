@@ -1,10 +1,10 @@
-from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 from state import AgentState, MODEL_NAME
 import json
 import re
 from utils.llm_res_formater import get_text
+
 
 def planner_agent(state: AgentState) -> AgentState:
     """
@@ -15,16 +15,18 @@ def planner_agent(state: AgentState) -> AgentState:
 
     try:
         llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0)
-        response = llm.invoke([
-            HumanMessage(content=f"""
+        response = llm.invoke(
+            [
+                HumanMessage(
+                    content=f"""
 You are a senior software engineer planning a bug fix.
 
 ISSUE:
-{state['issue_title']}
-{state['issue_body']}
+{state["issue_title"]}
+{state["issue_body"]}
 
 RELEVANT CODE:
-{state['code_context']}
+{state["code_context"]}
 
 Create a fix plan and respond ONLY with valid JSON (no markdown, no explanation):
 {{
@@ -38,8 +40,10 @@ Create a fix plan and respond ONLY with valid JSON (no markdown, no explanation)
 }}
 
 complexity must be "simple" (1-2 files, clear fix) or "complex" (multiple files or unclear root cause).
-""")
-        ])
+"""
+                )
+            ]
+        )
 
         # Parse JSON from response
         text = get_text(response)

@@ -1,5 +1,4 @@
-
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, Dict, List
 
 MODEL_NAME = 'gemini-3.1-flash-lite'
 
@@ -23,6 +22,12 @@ class AgentState(TypedDict):
     patch: str               # proposed code changes (Agent 3)
     tests: str               # pytest test code (Agent 4)
     pr_url: Optional[str]    # URL of the opened PR (Agent 5)
+
+    # --- CODE READER INTERNALS ---
+    # Lazily populated per file as Code Reader investigates.
+    # Key: file path, Value: list of {name, kind, start, end} dicts.
+    # Persists across turns so we never re-parse the same file twice.
+    symbol_cache: Dict[str, List[dict]]
 
     # --- ERROR HANDLING ---
     error: Optional[str]     # if any agent fails, it writes here
