@@ -32,6 +32,7 @@ SOURCE_EXTENSIONS = (
 
 MAX_GREP_RESULTS = 15
 MAX_READ_CHARS = 6000  # fallback cap for read_file only
+MAX_CONTEXT_LINES = 20
 
 
 # ─────────────────────────────────────────────
@@ -185,6 +186,13 @@ def grep_context(repo, pattern: str, _file_cache: dict, context_lines: int = 5) 
     Caps at 5 matches to keep token cost down.
     """
     try:
+        # Validate and clamp context_lines
+        try:
+            context_lines = int(context_lines)
+        except (TypeError, ValueError):
+            return "Error: grep_context.context_lines must be an integer"
+
+        context_lines = max(0, min(context_lines, MAX_CONTEXT_LINES))
         results = []
         contents = repo.get_contents("")
         scanned = 0
@@ -267,33 +275,34 @@ _LANG_FROM_EXT = {
     ".js": "javascript",
     ".jsx": "javascript",
     ".ts": "typescript",
-    ".tsx": "typescript",
+    ".tsx": "tsx",
     ".go": "go",
 }
 
 
 def _get_parser(lang_name: str):
     """Return a tree-sitter (Language, Parser) pair for the given language name."""
+
     if lang_name == "python":
         import tree_sitter_python as ts_lang
-        from tree_sitter import Language, Parser
 
-        language = Language(ts_lang.language())
+        language = ts_lang.language()
     elif lang_name == "javascript":
         import tree_sitter_javascript as ts_lang
-        from tree_sitter import Language, Parser
 
-        language = Language(ts_lang.language())
+        language = ts_lang.language()
     elif lang_name == "typescript":
         import tree_sitter_typescript as ts_lang
-        from tree_sitter import Language, Parser
 
-        language = Language(ts_lang.language_typescript())
+        language = ts_lang.language_typescript()
     elif lang_name == "go":
         import tree_sitter_go as ts_lang
-        from tree_sitter import Language, Parser
 
-        language = Language(ts_lang.language())
+        language = ts_lang.language()
+    elif lang_name == "tsx":
+        import tree_sitter_typescript as ts_lang
+
+        language = ts_lang.language_tsx()
     else:
         return None, None
 

@@ -63,7 +63,7 @@ Or a single report_findings to finish:
 
 INVESTIGATION STRATEGY:
 - First turn: extract all keywords from the issue (function names, error strings, file hints) and grep them ALL in one turn. Don't do one grep and wait.
-- After grep finds candidate files: call parse_and_cache_symbols on them, then lookup_symbol to get exact line ranges, then read_lines to see the actual code. Do all of this in one turn if possible.
+- After grep finds candidate files: call parse_and_cache_symbols on them, then lookup_symbol to get exact line ranges. On the following turn, call read_lines with the exact file and line range returned by lookup_symbol; never guess ranges or rely on defaults.
 - Each turn, look at everything found so far and decide what's still missing. If a read wasn't useful, try a different symbol or file next turn — don't stop early.
 - Only call report_findings when you can explain what needs to change and why.
 - confidence must be "high", "medium", or "low". Low confidence means Planner will flag for human review.
@@ -81,8 +81,8 @@ def _parse_tool_calls(raw_text: str) -> list:
     parsed = json.loads(cleaned)
     if isinstance(parsed, list):
         return parsed
-    if isinstance(parsed, dict):
-        return [parsed]  # single call wrapped in object — be lenient
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
     return []
 
 
@@ -103,7 +103,10 @@ def _execute_tool(tool_call: dict, repo, file_cache: dict, symbol_cache: dict) -
 
     elif tool == "grep_context":
         pattern = tool_call.get("pattern", "")
-        ctx = int(tool_call.get("context_lines", 5))
+        try:
+            ctx = int(tool_call.get("context_lines", 5))
+        except (TypeError, ValueError):
+            return "Error: grep_context.context_lines must be an integer"
         return grep_context(repo, pattern, file_cache, context_lines=ctx)
 
     elif tool == "read_file":
@@ -112,8 +115,11 @@ def _execute_tool(tool_call: dict, repo, file_cache: dict, symbol_cache: dict) -
 
     elif tool == "read_lines":
         path = tool_call.get("path", "")
-        start = int(tool_call.get("start", 1))
-        end = int(tool_call.get("end", start + 50))
+        try:
+            start = int(tool_call.get("start", 1))
+            end = int(tool_call.get("end", start + 50))
+        except (TypeError, ValueError):
+            return "Error: read_lines.start and read_lines.end must be integers"
         return read_lines(repo, path, start, end, file_cache)
 
     elif tool == "parse_and_cache_symbols":
@@ -195,38 +201,52 @@ Begin your investigation. What tool calls do you need this first turn?"""
                 print(f"  ⚠ Turn {turn}: empty tool call list, stopping")
                 break
 
-            # Check for report_findings in this turn's calls
+            # Extract report_findings (if present)
             report_call = next(
-                (c for c in tool_calls if c.get("tool") == "report_findings"), None
+                (c for c in tool_calls if c.get("tool") == "report_findings"),
+                None,
             )
 
-            # Execute all non-report tools first
+            # Everything except report_findings
+            exploratory_calls = [
+                c for c in tool_calls if c.get("tool") != "report_findings"
+            ]
+
+            # Only finish if report_findings is the ONLY call
+            is_final = report_call is not None and not exploratory_calls
+
+            # Execute exploratory tools
             turn_results = []
-            for call in tool_calls:
-                if call.get("tool") == "report_findings":
-                    continue
+
+            for call in exploratory_calls:
                 result = _execute_tool(call, repo, file_cache, symbol_cache)
+
                 turn_results.append(f"  tool: {json.dumps(call)}\n  result:\n{result}")
+
                 print(
-                    f"    → {call.get('tool')}({', '.join(str(v) for k, v in call.items() if k != 'tool')})"
+                    f"    → {call.get('tool')}("
+                    f"{', '.join(str(v) for k, v in call.items() if k != 'tool')})"
                 )
 
-            # Append this turn to transcript
+            # Save transcript
             turn_entry = f"=== Turn {turn} ===\n" + "\n\n".join(turn_results)
             transcript.append(turn_entry)
 
-            # If report_findings was called, we're done
-            if report_call:
+            # Finish only when report_findings was the sole tool
+            if is_final:
                 final_summary = report_call.get("summary", "")
                 confidence = report_call.get("confidence", "low")
                 files_found = report_call.get("files", [])
+
                 print(
-                    f"  ✓ Turn {turn}: investigation complete (confidence: {confidence})"
+                    f"  ✓ Turn {turn}: investigation complete "
+                    f"(confidence: {confidence})"
                 )
                 break
 
-            # Build next turn prompt with full transcript
+            # Build next turn prompt
             transcript_text = "\n\n".join(transcript)
+
             messages = [
                 HumanMessage(
                     content=f"""{opening_prompt}
