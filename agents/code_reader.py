@@ -1,17 +1,19 @@
 """
-Agent 1: Code Reader — now an investigating agent, not a one-shot fetcher.
+Agent 1: Code Reader — investigating agent with a dynamic ReAct-style loop.
 
-Instead of grabbing N arbitrary files and hoping they're relevant, this agent
-runs a manual ReAct-style loop:
+Each turn the agent:
+  1. Sees the issue + full transcript of everything found so far
+  2. Decides which tools to call (can batch multiple per turn)
+  3. We execute all of them and feed results back
+  4. Repeat up to MAX_TURNS, or until agent calls report_findings
 
-  1. Model sees the issue + a list of tools it can call
-  2. Model picks ONE action: list_dir, grep, read_file, or "done"
-  3. We execute that action against the real repo and feed the result back
-  4. Repeat, up to MAX_TURNS, until the model says "done" or we hit the cap
-
-This is the harness pattern: small steps, model decides what to look at,
-no upfront relevance guessing. Built manually (no LangChain bind_tools)
-so every step is visible and explainable.
+Key design decisions:
+  - No pre-assigned roles per turn. Agent decides dynamically each turn.
+  - Batched tool calls: agent can call multiple tools in one turn (one LLM call).
+  - Lazy symbol parsing: parse_file_symbols only called after grep finds a file.
+  - symbol_cache persists across turns in AgentState — no re-parsing same file.
+  - report_findings is the normal exit. MAX_TURNS is the safety cap, not the target.
+  - Manual loop (no LangChain bind_tools) — every step is visible and explainable.
 """
 
 import json
@@ -20,39 +22,137 @@ from github import Github
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 from state import AgentState, MODEL_NAME
-from utils.repo_tools import list_dir, grep, read_file
+from utils.repo_tools import (
+    list_dir,
+    grep,
+    read_file,
+    read_lines,
+    grep_context,
+    parse_file_symbols,
+    lookup_symbol,
+)
 import os
 from utils.llm_res_formater import get_text
 
-MAX_TURNS = 1
+MAX_TURNS = 4
 
 SYSTEM_INSTRUCTIONS = """You are a code investigator helping debug a GitHub issue.
-You do NOT have the codebase yet. You must investigate it yourself using these actions:
+You do NOT have the codebase yet. You must investigate it step by step using tools.
 
-1. list_dir(path) — see what files/folders exist at a path. Use "" for repo root.
-2. grep(pattern) — search all source files for a text pattern (function names, error strings, etc).
-3. read_file(path) — read the full content of one specific file.
-4. done() — call this when you have enough context to describe the relevant code.
+AVAILABLE TOOLS:
+1. list_dir(path)                        — list files/folders at a path. Use "" for repo root.
+2. grep(pattern)                         — search all source files for a text pattern.
+3. grep_context(pattern, context_lines)  — like grep but returns surrounding lines for context. Use this when grep alone isn't enough to decide if a file is relevant.
+4. read_file(path)                       — read full file (use only for small files, prefer read_lines).
+5. read_lines(path, start, end)          — read an exact line range. Always use this after lookup_symbol gives you line numbers.
+6. parse_and_cache_symbols(path)         — parse a file's symbols (functions, classes) into the cache. Call this after grep finds a file you want to explore deeply.
+7. lookup_symbol(name)                   — find a symbol by name in already-parsed files. Returns file + line range.
+8. report_findings(summary, files, confidence) — call this when you have enough context. This ends the investigation.
 
-Respond with ONLY valid JSON for ONE action per turn, no markdown, no explanation outside the JSON:
-{"action": "list_dir", "path": ""}
-{"action": "grep", "pattern": "calculate_total"}
-{"action": "read_file", "path": "utils/parser.py"}
-{"action": "done", "summary": "your findings here — relevant files, functions, and what needs to change"}
+RESPONSE FORMAT:
+Respond ONLY with a JSON array of tool calls. No explanation, no markdown:
+[
+  {"tool": "grep", "pattern": "handleLogin"},
+  {"tool": "grep", "pattern": "router.push"}
+]
 
-Think like a developer: start broad (list_dir or grep for keywords from the issue),
-then narrow in on specific files. Don't call read_file on something you haven't
-located via list_dir or grep first, unless the issue explicitly names the file.
+Or a single report_findings to finish:
+[
+  {"tool": "report_findings", "summary": "...", "files": ["src/auth/LoginForm.jsx"], "confidence": "high"}
+]
+
+INVESTIGATION STRATEGY:
+- First turn: extract all keywords from the issue (function names, error strings, file hints) and grep them ALL in one turn. Don't do one grep and wait.
+- After grep finds candidate files: call parse_and_cache_symbols on them, then lookup_symbol to get exact line ranges. On the following turn, call read_lines with the exact file and line range returned by lookup_symbol; never guess ranges or rely on defaults.
+- Each turn, look at everything found so far and decide what's still missing. If a read wasn't useful, try a different symbol or file next turn — don't stop early.
+- Only call report_findings when you can explain what needs to change and why.
+- confidence must be "high", "medium", or "low". Low confidence means Planner will flag for human review.
+- BATCH tool calls — call everything you need this turn in one array. Don't do one thing per turn when you could do three.
 """
 
 
-def _parse_action(raw_text: str) -> dict:
-    print(type(raw_text))
-    print('raaawww')
-    print(raw_text)
-    """Extract the JSON action from the model's response, tolerating code fences."""
+def _parse_tool_calls(raw_text: str) -> list:
+    """
+    Parse the model response into a list of tool call dicts.
+    Tolerates markdown code fences.
+    Returns empty list if parsing fails.
+    """
     cleaned = re.sub(r"```json|```", "", raw_text).strip()
-    return json.loads(cleaned)
+    parsed = json.loads(cleaned)
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    return []
+
+
+def _execute_tool(tool_call: dict, repo, file_cache: dict, symbol_cache: dict) -> str:
+    """
+    Dispatch one tool call dict to the correct repo_tools function.
+    Returns the result as a string to append to the transcript.
+    """
+    tool = tool_call.get("tool", "")
+
+    if tool == "list_dir":
+        path = tool_call.get("path", "")
+        return list_dir(repo, path)
+
+    elif tool == "grep":
+        pattern = tool_call.get("pattern", "")
+        return grep(repo, pattern, file_cache)
+
+    elif tool == "grep_context":
+        pattern = tool_call.get("pattern", "")
+        try:
+            ctx = int(tool_call.get("context_lines", 5))
+        except (TypeError, ValueError):
+            return "Error: grep_context.context_lines must be an integer"
+        return grep_context(repo, pattern, file_cache, context_lines=ctx)
+
+    elif tool == "read_file":
+        path = tool_call.get("path", "")
+        return read_file(repo, path, file_cache)
+
+    elif tool == "read_lines":
+        path = tool_call.get("path", "")
+        try:
+            start = int(tool_call.get("start", 1))
+            end = int(tool_call.get("end", start + 50))
+        except (TypeError, ValueError):
+            return "Error: read_lines.start and read_lines.end must be integers"
+        return read_lines(repo, path, start, end, file_cache)
+
+    elif tool == "parse_and_cache_symbols":
+        path = tool_call.get("path", "")
+        if path in symbol_cache:
+            return f"Symbols for '{path}' already cached ({len(symbol_cache[path])} symbols)."
+        if path not in file_cache:
+            # fetch the file first
+            result = read_file(repo, path, file_cache)
+            if result.startswith("Error"):
+                return result
+        symbols = parse_file_symbols(path, file_cache[path])
+        symbol_cache[path] = symbols
+        if not symbols:
+            return (
+                f"No symbols extracted from '{path}' (unsupported type or empty file)."
+            )
+        summary = ", ".join(
+            f"{s['name']}({s['start']}-{s['end']})" for s in symbols[:20]
+        )
+        more = f" ... +{len(symbols) - 20} more" if len(symbols) > 20 else ""
+        return f"Cached {len(symbols)} symbols from '{path}': {summary}{more}"
+
+    elif tool == "lookup_symbol":
+        name = tool_call.get("name", "")
+        return lookup_symbol(name, symbol_cache)
+
+    elif tool == "report_findings":
+        # Handled in the loop — won't reach here
+        return ""
+
+    else:
+        return f"Unknown tool '{tool}' — check your spelling. Available: list_dir, grep, grep_context, read_file, read_lines, parse_and_cache_symbols, lookup_symbol, report_findings"
 
 
 def code_reader_agent(state: AgentState) -> AgentState:
@@ -63,97 +163,139 @@ def code_reader_agent(state: AgentState) -> AgentState:
         repo = g.get_repo(state["repo_full_name"])
         llm = ChatGoogleGenerativeAI(model=MODEL_NAME, temperature=0)
 
-        file_cache = {}  # avoid re-fetching the same file twice in one investigation
-        transcript = (
-            []
-        )  # running log of actions + results, fed back to the model each turn
+        file_cache: dict = {}
+        # Carry over symbol_cache from state if it exists (future: multi-run pipelines)
+        symbol_cache: dict = state.get("symbol_cache") or {}
+
+        transcript = []
         final_summary = None
+        confidence = "low"
+        files_found = []
 
         opening_prompt = f"""{SYSTEM_INSTRUCTIONS}
 
-ISSUE:
-{state['issue_title']}
-{state['issue_body']}
+ISSUE TITLE: {state["issue_title"]}
 
-Begin your investigation. What's your first action?"""
+ISSUE BODY:
+{state["issue_body"]}
+
+Begin your investigation. What tool calls do you need this first turn?"""
 
         messages = [HumanMessage(content=opening_prompt)]
-        print("msg: " + messages[0].content + "\n")
 
         for turn in range(1, MAX_TURNS + 1):
+            print(f"\n  [Turn {turn}/{MAX_TURNS}]")
+
             response = llm.invoke(messages)
-            print(response)
-            print('reponseee')
-            print("res: " + get_text(response) + "\n")
+            raw = get_text(response)
 
             try:
-                action = _parse_action(get_text(response))
-            except Exception:
+                tool_calls = _parse_tool_calls(raw)
+            except Exception as e:
                 print(
-                    f"  ⚠ Turn {turn}: model returned unparseable action, stopping loop"
+                    f"  ⚠ Turn {turn}: unparseable response — {e}\n  Raw: {raw[:200]}"
                 )
                 break
 
-            action_type = action.get("action")
-
-            if action_type == "done":
-                final_summary = action.get("summary", "")
-                print(f"  ✓ Turn {turn}: investigation complete")
+            if not tool_calls:
+                print(f"  ⚠ Turn {turn}: empty tool call list, stopping")
                 break
 
-            elif action_type == "list_dir":
-                path = action.get("path", "")
-                result = list_dir(repo, path)
-                print(f"  → Turn {turn}: list_dir('{path}')")
-
-            elif action_type == "grep":
-                pattern = action.get("pattern", "")
-                result = grep(repo, pattern, file_cache)
-                print(
-                    f"  → Turn {turn}: grep('{pattern}') — {len(result.splitlines())} matches"
-                )
-
-            elif action_type == "read_file":
-                path = action.get("path", "")
-                result = read_file(repo, path, file_cache)
-                print(f"  → Turn {turn}: read_file('{path}')")
-
-            else:
-                print(f"  ⚠ Turn {turn}: unknown action '{action_type}', stopping loop")
-                break
-
-            transcript.append(f"Action: {action}\nResult:\n{result}")
-
-            # Feed the running transcript back so the model has memory of what it's seen
-            messages = [HumanMessage(content=f"""{opening_prompt}
-
-INVESTIGATION SO FAR:
-{chr(10).join(transcript)}
-
-What's your next action? (Turn {turn + 1} of {MAX_TURNS} max)""")]
-
-        else:
-            # Loop exhausted MAX_TURNS without the model calling "done"
-            print(
-                f"  ⚠ Hit {MAX_TURNS}-turn cap without explicit 'done' — using gathered context as-is"
+            # Extract report_findings (if present)
+            report_call = next(
+                (c for c in tool_calls if c.get("tool") == "report_findings"),
+                None,
             )
 
+            # Everything except report_findings
+            exploratory_calls = [
+                c for c in tool_calls if c.get("tool") != "report_findings"
+            ]
+
+            # Only finish if report_findings is the ONLY call
+            is_final = report_call is not None and not exploratory_calls
+
+            # Execute exploratory tools
+            turn_results = []
+
+            for call in exploratory_calls:
+                result = _execute_tool(call, repo, file_cache, symbol_cache)
+
+                turn_results.append(f"  tool: {json.dumps(call)}\n  result:\n{result}")
+
+                print(
+                    f"    → {call.get('tool')}("
+                    f"{', '.join(str(v) for k, v in call.items() if k != 'tool')})"
+                )
+
+            # Save transcript
+            turn_entry = f"=== Turn {turn} ===\n" + "\n\n".join(turn_results)
+            transcript.append(turn_entry)
+
+            # Finish only when report_findings was the sole tool
+            if is_final:
+                final_summary = report_call.get("summary", "")
+                confidence = report_call.get("confidence", "low")
+                files_found = report_call.get("files", [])
+
+                print(
+                    f"  ✓ Turn {turn}: investigation complete "
+                    f"(confidence: {confidence})"
+                )
+                break
+
+            # Build next turn prompt
+            transcript_text = "\n\n".join(transcript)
+
+            messages = [
+                HumanMessage(
+                    content=f"""{opening_prompt}
+
+INVESTIGATION SO FAR:
+{transcript_text}
+
+Turn {turn + 1} of {MAX_TURNS} max. What do you need to look at next?
+Remember: batch all tool calls you need this turn into one array."""
+                )
+            ]
+
+        else:
+            print(
+                f"  ⚠ Hit {MAX_TURNS}-turn cap without report_findings — using gathered context"
+            )
+
+        # Build final summary if agent never called report_findings
         if final_summary is None:
-            # Either hit turn cap or parsing failed — fall back to whatever was gathered
             if transcript:
                 final_summary = (
-                    "Investigation did not conclude explicitly. Raw findings:\n\n"
+                    "Investigation hit turn cap without a conclusion. Raw findings:\n\n"
                     + "\n\n".join(transcript)
                 )
+                confidence = "low"
             else:
                 final_summary = "No investigation data was gathered."
+                confidence = "low"
 
-        files_read = list(file_cache.keys())
-        print(
-            f"  ✓ Investigation used {len(transcript)} tool call(s), read {len(files_read)} file(s): {files_read}"
+        # Format code_context for downstream agents
+        code_context = (
+            f"[Confidence: {confidence}]\n\n"
+            f"Summary:\n{final_summary}\n\n"
+            f"Files identified: {', '.join(files_found) if files_found else 'see transcript'}\n\n"
+            f"Full investigation transcript:\n{'=' * 40}\n" + "\n\n".join(transcript)
         )
 
-        return {**state, "code_context": final_summary}
+        print(
+            f"\n  ✓ Investigation done — {len(transcript)} turn(s), "
+            f"{len(file_cache)} file(s) fetched, "
+            f"{sum(len(v) for v in symbol_cache.values())} symbols cached, "
+            f"confidence: {confidence}"
+        )
+
+        return {
+            **state,
+            "code_context": code_context,
+            "symbol_cache": symbol_cache,
+        }
 
     except Exception as e:
         print(f"  ✗ Code Reader failed: {e}")

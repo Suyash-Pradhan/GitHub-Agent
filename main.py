@@ -121,6 +121,7 @@ def main():
         "patch":          "",
         "tests":          "",
         "pr_url":         None,
+        "symbol_cache":   {},   # populated lazily by Code Reader as it investigates
         "error":          None,
     }
 
@@ -133,7 +134,7 @@ def main():
     if final_state.get("error"):
         print(f"  ✗ Pipeline failed: {final_state['error']}")
     elif final_state.get("pr_url"):
-        print(f"  ✓ Done! Pull Request opened:")
+        print("  ✓ Done! Pull Request opened:")
         print(f"  → {final_state['pr_url']}")
     else:
         print("  Pipeline completed (no PR opened)")
