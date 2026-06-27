@@ -163,22 +163,12 @@ def read_lines(repo, path: str, start: int, end: int, _file_cache: dict) -> str:
 
         if start > total:
             return f"Error: start line {start} exceeds file length ({total} lines)"
-        if end < start:
-            return f"Error: end line {end} is before start line {start}"
-
-        capped = False
-        if end - start + 1 > MAX_READ_LINES:
-            end = min(total, start + MAX_READ_LINES - 1)
-            capped = True
-
         selected = lines[start - 1 : end]
         # Prefix each line with its real line number so the agent can reason about positions
         numbered = "\n".join(
             f"{start + i:>4}: {line}" for i, line in enumerate(selected)
         )
-        suffix = "\n... (truncated — narrow the line range)" if capped else ""
-        return f"[{path} lines {start}-{end} of {total}]\n{numbered}{suffix}"
-
+        return f"[{path} lines {start}-{end} of {total}]\n{numbered}"
     except Exception as e:
         return f"Error reading lines from '{path}': {e}"
 
