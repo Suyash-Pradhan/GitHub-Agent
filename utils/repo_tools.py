@@ -281,31 +281,31 @@ _LANG_FROM_EXT = {
 
 def _get_parser(lang_name: str):
     """Return a tree-sitter (Language, Parser) pair for the given language name."""
+    from tree_sitter import Parser
+    from tree_sitter import Language
 
     if lang_name == "python":
         import tree_sitter_python as ts_lang
+        language = Language(ts_lang.language())
 
-        language = ts_lang.language()
     elif lang_name == "javascript":
         import tree_sitter_javascript as ts_lang
+        language = Language(ts_lang.language())
 
-        language = ts_lang.language()
     elif lang_name == "typescript":
         import tree_sitter_typescript as ts_lang
+        language = Language(ts_lang.language_typescript())
 
-        language = ts_lang.language_typescript()
     elif lang_name == "go":
         import tree_sitter_go as ts_lang
+        language = Language(ts_lang.language())
 
-        language = ts_lang.language()
     elif lang_name == "tsx":
         import tree_sitter_typescript as ts_lang
+        language = Language(ts_lang.language_tsx())
 
-        language = ts_lang.language_tsx()
     else:
         return None, None
-
-    from tree_sitter import Parser
 
     parser = Parser(language)
     return language, parser
