@@ -95,7 +95,7 @@ Pushes the modifications to GitHub and creates the Pull Request.
 
 ---
 
-## 🎯 Technical Design Highlights (Interviewer FAQ)
+## 🎯 Technical Design Highlights 
 
 - **Why LangGraph over LangChain Chains?**
   LangGraph provides cyclic graph capabilities, enabling real-world workflows (like ReAct loops and conditional fallback routing) that require loops and state persistence. This design isolates each agent's execution while sharing context through a single, well-defined state schema.
@@ -179,12 +179,8 @@ python main.py --issue-url https://github.com/owner/repository/issues/105
 
 ## ⚠️ Real-World Limitations
 
-- **Symbol Parsing Support**: Tree-sitter AST symbol extraction is optimized for Python, JavaScript, TypeScript, and Go. Other source files gracefully fall back to regex keyword search (`grep`).
+- **Symbol Parsing Support**: "AST-level symbol extraction is supported for Python, JavaScript, TypeScript, and Go. All other languages fall back to grep-based keyword search automatically."
 - **Unit Test Execution**: Generated test suites are written in Python (`pytest`). For non-Python codebases, the tests are valuable logic verification templates but are not executed natively by the pipeline's runners.
 - **Complex Repository Layouts**: Large monorepos or issues spanning multiple separate code directories may hit the 4-turn safety cap before resolving files.
 
 ---
-
-## 🗺️ Roadmap & Next Steps
-- **Web Interface**: A lightweight web frontend showing the real-time node transitions of the LangGraph execution path.
-- **Retrieval-Augmented Generation (RAG)**: Fallback search indexing using vector embeddings of code snippets when exact keyword matching fails.
