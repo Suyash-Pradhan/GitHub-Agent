@@ -24,7 +24,7 @@ from agents.pr_opener_agent import pr_opener_agent
 from agents.test_writer_agent import test_writer_agent
 from state import AgentState
 from agents.code_reader import code_reader_agent
-from agents.planner import planner_agent, route_by_complexity
+from agents.planner import planner_agent, route_after_planner
 # from agents.workers import code_writer_agent, test_writer_agent, pr_opener_agent, handle_error
 
 load_dotenv()
@@ -50,13 +50,11 @@ def build_graph() -> StateGraph:
     workflow.set_entry_point("code_reader")
     workflow.add_edge("code_reader", "planner")
 
-    # *** THE KEY PART: conditional routing based on complexity ***
     workflow.add_conditional_edges(
         "planner",
-        route_by_complexity,          # function that returns "simple", "complex", or "handle_error"
+        route_after_planner,          # function that returns "code_writer" or "handle_error"
         {
-            "simple":       "code_writer",   # straightforward fix → go straight to writing
-            "complex":      "code_writer",   # for now same path; later add a "research" node here
+            "code_writer":  "code_writer",
             "handle_error": "handle_error",
         }
     )
@@ -121,7 +119,6 @@ def main():
         "repo_full_name": issue_details["repo_full_name"],
         "code_context":   "",
         "fix_plan":       "",
-        "complexity":     "simple",
         "patch":          "",
         "tests":          "",
         "pr_url":         None,
