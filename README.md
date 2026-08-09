@@ -34,30 +34,30 @@ The workflow is modeled as a stateful `StateGraph` in LangGraph. State is shared
          │    (Agent 2)    │
          └────────┬────────┘
                   │
-          [route_by_complexity]
-          /       |         \
-   (simple)   (complex)   (error)
-     /            |            \
-    v             v             v
-┌────────┐    ┌────────┐   ┌──────────────┐
-│  Code  │    │  Code  │   │ Handle Error │
-│ Writer │    │ Writer │   │   (Helper)   │
-└─┬──────┘    └─┬──────┘   └────┬─────────┘
-  │             │               │
-  ▼             ▼               │
-┌────────┐    ┌────────┐        │
-│  Test  │    │  Test  │        │
-│ Writer │    │ Writer │        │
-└─┬──────┘    └─┬──────┘        │
-  │             │               │
-  ▼             ▼               │
-┌────────┐    ┌────────┐        │
-│   PR   │    │   PR   │        │
-│ Opener │    │ Opener │        │
-└─┬──────┘    └─┬──────┘        │
-  │             │               │
-  ▼             ▼               │
- [END] ◄────────┴───────────────┘
+         [route_after_planner]
+         /                 \
+    (success)            (error)
+      /                       \
+     v                         v
+┌──────────┐            ┌──────────────┐
+│   Code   │            │ Handle Error │
+│  Writer  │            │   (Helper)   │
+└────┬─────┘            └──────┬───────┘
+     │                         │
+     ▼                         │
+┌──────────┐                   │
+│   Test   │                   │
+│  Writer  │                   │
+└────┬─────┘                   │
+     │                         │
+     ▼                         │
+┌──────────┐                   │
+│    PR    │                   │
+│  Opener  │                   │
+└────┬─────┘                   │
+     │                         │
+     ▼                         │
+   [END] ◄─────────────────────┘
 ```
 
 ---
@@ -74,8 +74,8 @@ Responsible for investigating the repository to locate the buggy files and symbo
 
 ### 2. Planner ([agents/planner.py](file:///d:/code/Github%20issue/agents/planner.py))
 Consumes the issue definition and the Code Reader's context to produce a formal fix design.
-- Generates a structured JSON plan specifying the files to edit, the exact steps, and a complexity classification (`simple` or `complex`).
-- **Dynamic Graph Routing**: The complexity output drives LangGraph's conditional routing function `route_by_complexity`. Currently, both paths route to the Code Writer, but the graph is pre-engineered to support advanced agent logic or human-in-the-loop review nodes for complex issues.
+- Generates a structured JSON plan specifying the files to edit, the exact steps, and a summary.
+- **Dynamic Graph Routing**: The routing function `route_after_planner` dynamically checks if the plan generation succeeded or errored, routing the flow to the Code Writer or the Handle Error node.
 
 ### 3. Code Writer ([agents/code_writer_agent.py](file:///d:/code/Github%20issue/agents/code_writer_agent.py))
 Implements the fix specified in the planner's design.
@@ -113,7 +113,7 @@ Pushes the modifications to GitHub and creates the Pull Request.
 ```
 ├── agents/
 │   ├── code_reader.py         # Agent 1: ReAct investigation loop & symbol parsing
-│   ├── planner.py             # Agent 2: Plan construction & complexity routing
+│   ├── planner.py             # Agent 2: Plan construction & workflow routing
 │   ├── code_writer_agent.py   # Agent 3: Targeted source code patch generation
 │   ├── test_writer_agent.py   # Agent 4: pytest generation matching the patch
 │   ├── pr_opener_agent.py     # Agent 5: Git branch commits & GitHub PR publishing
@@ -186,6 +186,5 @@ python main.py --issue-url https://github.com/owner/repository/issues/105
 ---
 
 ## 🗺️ Roadmap & Next Steps
-- **Human-in-the-Loop Approval**: Route the `complex` complexity branch to a CLI/UI prompt requesting human verification before triggering Code Writer.
 - **Web Interface**: A lightweight web frontend showing the real-time node transitions of the LangGraph execution path.
 - **Retrieval-Augmented Generation (RAG)**: Fallback search indexing using vector embeddings of code snippets when exact keyword matching fails.
