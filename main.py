@@ -32,8 +32,8 @@ load_dotenv()
 
 def build_graph() -> StateGraph:
     """
-    Constructs the LangGraph StateGraph.
-    This is the core architecture — study this for interviews.
+    Compiles the autonomous issue resolution workflow using LangGraph.
+    Connects Code Reader, Planner, Writer, Tester, and PR Opener nodes.
     """
     workflow = StateGraph(AgentState)
 
